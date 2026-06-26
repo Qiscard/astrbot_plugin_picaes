@@ -344,28 +344,32 @@ class PicaesPlugin(Star):
 
     # ---------- 结果发送 ----------
 
-    async def _deliver_result(self, event: AstrMessageEvent, result_bytes: bytes, mode_name: str):
-        """根据 send_format / enable_encryption / send_password 配置发送结果"""
-        fmt = self.send_format
+    async def _deliver_result(self, event: AstrMessageEvent, result_bytes: bytes,
+                              mode_name: str, send_fmt: str, is_encrypt: bool = False):
+        """
+        根据配置发送结果。
+        send_fmt: "image"/"pdf"/"zip"/"link"
+        is_encrypt: 加密模式下图片不二次压缩（保护像素块完整性）
+        """
         encrypted = self.enable_encryption
         password = self.file_password if encrypted else ""
 
         # --- 图片直发 ---
-        if fmt == "image":
-            send_bytes = await asyncio.to_thread(_compress_for_send, result_bytes)
-            ext = _detect_format(send_bytes).lower()
-            send_path = _save_file(send_bytes, ext if ext in ("jpg", "png") else "jpg")
+        if send_fmt == "image":
+            # 加密数据不做二次压缩（会破坏像素块导致解密失败）
+            send_bytes = result_bytes if is_encrypt else await asyncio.to_thread(_compress_for_send, result_bytes)
+            send_path = _save_file(send_bytes, "jpg")
             logger.info(f"[Picaes] 发送图片: {send_path} ({len(send_bytes)}字节)")
             yield event.chain_result([Image.fromFileSystem(send_path)])
             return
 
         # --- 图床链接 ---
-        if fmt == "link":
+        if send_fmt == "link":
             yield event.plain_result("链接模式需配合 process_mode=3(URL模式) 使用。")
             return
 
         # --- PDF ---
-        if fmt == "pdf":
+        if send_fmt == "pdf":
             try:
                 pdf_bytes = await asyncio.to_thread(_make_pdf, result_bytes, password)
             except ImportError:
@@ -388,7 +392,7 @@ class PicaesPlugin(Star):
             return
 
         # --- ZIP ---
-        if fmt == "zip":
+        if send_fmt == "zip":
             try:
                 zip_bytes = await asyncio.to_thread(_make_zip, result_bytes, password)
             except ImportError:
@@ -415,10 +419,12 @@ class PicaesPlugin(Star):
     async def _process(self, event: AstrMessageEvent, mode: str, force_format: str | None = None):
         """
         mode: "encrypt" / "decrypt"
-        force_format: None(用配置) / "image" / "pdf" / "zip"
+        force_format: None(加密默认图片/解密用配置) / "image" / "pdf" / "zip"
         """
         mode_name = "加密" if mode == "encrypt" else "解密"
-        send_fmt = force_format if force_format else (self.send_format or "image")
+        is_encrypt = (mode == "encrypt")
+        # 加密默认发图片（加密数据不适合转PDF/ZIP），解密按配置
+        send_fmt = force_format if force_format else ("image" if is_encrypt else (self.send_format or "image"))
         try:
             prompt = event.message_str.strip()
             parts = prompt.split(maxsplit=1)
@@ -499,11 +505,9 @@ class PicaesPlugin(Star):
             _save_file(result_bytes, result_ext if result_ext in ("jpg", "png") else "jpg")
 
             # 临时覆盖 send_format 发送
-            orig_fmt = self.send_format
-            self.send_format = send_fmt
-            async for r in self._deliver_result(event, result_bytes, mode_name):
+            # 发送
+            async for r in self._deliver_result(event, result_bytes, mode_name, send_fmt, is_encrypt=is_encrypt):
                 yield r
-            self.send_format = orig_fmt
 
             logger.info(f"[Picaes] === {mode_name}结束 === {time.monotonic() - t0:.1f}s")
 
