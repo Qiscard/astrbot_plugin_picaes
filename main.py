@@ -210,6 +210,7 @@ class PicaesPlugin(Star):
         self.enable_encryption = config.get("enable_encryption", True)
         self.file_password = config.get("file_password", "123")
         self.send_password = config.get("send_password", True)
+        self.enable_compress = config.get("enable_compress", True)
         raw_mode = config.get("process_mode", "0")
         self.process_mode = self._MODE_MAP.get(raw_mode, int(raw_mode) if str(raw_mode).isdigit() else 0)
         self.api_url = config.get("api_url", "https://picace.995456.xyz/api/process")
@@ -356,8 +357,11 @@ class PicaesPlugin(Star):
 
         # --- 图片直发 ---
         if send_fmt == "image":
-            # 加密数据不做二次压缩（会破坏像素块导致解密失败）
-            send_bytes = result_bytes if is_encrypt else await asyncio.to_thread(_compress_for_send, result_bytes)
+            # 加密数据不压缩（保护像素块）；解密时按配置决定是否压缩
+            if is_encrypt or not self.enable_compress:
+                send_bytes = result_bytes
+            else:
+                send_bytes = await asyncio.to_thread(_compress_for_send, result_bytes)
             send_path = _save_file(send_bytes, "jpg")
             logger.info(f"[Picaes] 发送图片: {send_path} ({len(send_bytes)}字节)")
             yield event.chain_result([Image.fromFileSystem(send_path)])
@@ -527,16 +531,6 @@ class PicaesPlugin(Star):
         async for r in self._process(event, "decrypt"):
             yield r
 
-    @filter.command("加密pdf")
-    async def encrypt_pdf(self, event: AstrMessageEvent):
-        async for r in self._process(event, "encrypt", force_format="pdf"):
-            yield r
-
-    @filter.command("加密zip")
-    async def encrypt_zip(self, event: AstrMessageEvent):
-        async for r in self._process(event, "encrypt", force_format="zip"):
-            yield r
-
     @filter.command("解密pdf")
     async def decrypt_pdf(self, event: AstrMessageEvent):
         async for r in self._process(event, "decrypt", force_format="pdf"):
@@ -552,16 +546,14 @@ class PicaesPlugin(Star):
         yield event.plain_result(
             "📖 图片加解密工具 v3.0 帮助\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
-            "🔒 加密指令：\n"
-            "  加密 [等级] [密钥] — 加密后按配置发送\n"
-            "  加密pdf [等级] [密钥] — 加密后转PDF发送\n"
-            "  加密zip [等级] [密钥] — 加密后转ZIP发送\n\n"
-            "🔓 解密指令：\n"
-            "  解密 [等级] [密钥] — 解密后按配置发送\n"
-            "  解密pdf [等级] [密钥] — 解密后转PDF发送\n"
-            "  解密zip [等级] [密钥] — 解密后转ZIP发送\n\n"
-            "⚙️ 参数说明：\n"
+            "🔒 加密：\n"
+            "  加密 [等级] [密钥] — 加密图片\n\n"
+            "🔓 解密：\n"
+            "  解密 [等级] [密钥] — 解密（按配置发送）\n"
+            "  解密pdf [等级] [密钥] — 解密后转PDF\n"
+            "  解密zip [等级] [密钥] — 解密后转ZIP\n\n"
+            "⚙️ 参数：\n"
             f"  等级：1-10（默认{self.default_level}）\n"
             f"  密钥：自定义（默认 {self.default_key}）\n\n"
-            "💡 用法：发送指令并附带图片，或回复图片后发送指令"
+            "💡 发送指令附带图片，或回复图片后发送指令"
         )

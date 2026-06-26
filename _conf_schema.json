@@ -25,6 +25,12 @@
     "hint": "开启：发送密码消息；关闭：若已加密则提示「文件已加密」，若未加密则不发消息",
     "default": true
   },
+  "enable_compress": {
+    "type": "bool",
+    "description": "是否压缩图片",
+    "hint": "开启：缩放+压缩后发送（更快但可能影响解密）；关闭：原图直接发送（更清晰）",
+    "default": true
+  },
   "process_mode": {
     "type": "string",
     "description": "图片处理方式",
