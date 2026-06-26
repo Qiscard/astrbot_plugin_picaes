@@ -102,7 +102,56 @@ def _detect_image_format(data: bytes) -> tuple:
     return ("png", "image/png")
 
 
+_MAX_SEND_SIZE = 2 * 1024 * 1024  # 2MB，超过此大小主动压缩
+
+
+def _compress_for_send(data: bytes) -> tuple:
+    """
+    压缩图片到目标大小以下，返回 (bytes, ext)。
+    策略：先尝试 PNG optimize，仍超标则缩尺寸+转 JPEG。
+    """
+    if len(data) <= _MAX_SEND_SIZE:
+        return data, "png"
+
+    try:
+        img = PILImage.open(io.BytesIO(data))
+    except Exception:
+        return data, "png"
+
+    # 先试 PNG optimize
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", optimize=True)
+    if buf.tell() <= _MAX_SEND_SIZE:
+        logger.info(f"[Picaes] PNG优化: {len(data)}→{buf.tell()}字节")
+        return buf.getvalue(), "png"
+
+    # 仍超标：缩尺寸到长边 2048 + 转 JPEG
+    w, h = img.size
+    max_side = 2048
+    if max(w, h) > max_side:
+        ratio = max_side / max(w, h)
+        img = img.resize((int(w * ratio), int(h * ratio)), PILImage.LANCZOS)
+
+    # 转 RGBA→RGB（JPEG 不支持透明通道）
+    if img.mode == "RGBA":
+        bg = PILImage.new("RGB", img.size, (255, 255, 255))
+        bg.paste(img, mask=img.split()[3])
+        img = bg
+    elif img.mode != "RGB":
+        img = img.convert("RGB")
+
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=85, optimize=True)
+    logger.info(f"[Picaes] 已压缩: {len(data)}→{buf.tell()}字节 (JPEG)")
+    return buf.getvalue(), "jpg"
+
+
 def _save_result_to_file(data: bytes, ext: str) -> str:
+    """把结果写入临时文件，自动压缩大图"""
+    data, final_ext = _compress_for_send(data)
+    if final_ext != ext:
+        ext = final_ext
+
     temp_dir = get_astrbot_temp_path()
     filename = f"picaes_{int(time.time())}_{uuid.uuid4().hex[:6]}.{ext}"
     path = os.path.join(temp_dir, filename)
