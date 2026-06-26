@@ -1,4 +1,12 @@
 {
+  "process_mode": {
+    "type": "int",
+    "description": "处理方式（0=本地优先API回退，1=仅本地，2=仅API）",
+    "hint": "推荐服务器使用0或1，无需API也能正常工作",
+    "default": 0,
+    "minimum": 0,
+    "maximum": 2
+  },
   "api_url": {
     "type": "string",
     "description": "API接口地址",
@@ -22,7 +30,7 @@
   "timeout": {
     "type": "int",
     "description": "API请求超时时间(秒)",
-    "hint": "大图片处理时间较长，建议设置较长超时",
+    "hint": "仅API模式生效，大图片处理时间较长",
     "default": 120,
     "minimum": 10,
     "maximum": 300
