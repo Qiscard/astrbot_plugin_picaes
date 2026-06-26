@@ -1,0 +1,30 @@
+{
+  "api_url": {
+    "type": "string",
+    "description": "API接口地址",
+    "hint": "图片加解密API的完整地址，例如 https://picace.995456.xyz/api/proxy",
+    "default": "https://picace.995456.xyz/api/proxy"
+  },
+  "default_key": {
+    "type": "string",
+    "description": "默认密钥",
+    "hint": "未指定密钥时使用的默认密钥",
+    "default": "tool.hadsky.com"
+  },
+  "default_level": {
+    "type": "int",
+    "description": "默认加密等级(1-10)",
+    "hint": "未指定等级时使用的默认等级，1=10×10, 4=40×40, 10=100×100",
+    "default": 4,
+    "minimum": 1,
+    "maximum": 10
+  },
+  "timeout": {
+    "type": "int",
+    "description": "API请求超时时间(秒)",
+    "hint": "大图片处理时间较长，建议设置较长超时",
+    "default": 120,
+    "minimum": 10,
+    "maximum": 300
+  }
+}

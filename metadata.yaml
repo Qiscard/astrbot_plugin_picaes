@@ -1,0 +1,5 @@
+name: 图片加解密
+author: AstrBotUser
+description: 通过API对图片进行马赛克加密/解密，支持自定义加密等级和密钥
+version: 1.0.0
+repo: astrbot_plugin_picaes
