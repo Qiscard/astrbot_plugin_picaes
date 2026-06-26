@@ -96,10 +96,9 @@ def process_image_local(image_bytes: bytes, level: int, key: str, mode: str) -> 
         row, col = divmod(i, n)
         result.paste(block, (col * block_w, row * block_h))
 
-    rgb = PILImage.new("RGB", result.size, (255, 255, 255))
-    rgb.paste(result, mask=result.split()[3])
+    # RGBA 直接输出 PNG（无损），保留完整画质
     buf = io.BytesIO()
-    rgb.save(buf, format="JPEG", quality=85)
+    result.save(buf, format="PNG")
     return buf.getvalue()
 
 
