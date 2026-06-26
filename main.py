@@ -45,7 +45,7 @@ def _save_result_to_file(data: bytes, ext: str) -> str:
     "astrbot_plugin_picaes",
     "AstrBotUser",
     "通过API对图片进行马赛克加密/解密，支持自定义加密等级和密钥",
-    "1.0.4",
+    "1.0.6",
     "astrbot_plugin_picaes",
 )
 class PicaesPlugin(Star):
@@ -83,21 +83,52 @@ class PicaesPlugin(Star):
 
         return level, key
 
+    async def _request(self, method: str, url: str, **kwargs) -> tuple:
+        """
+        统一网络请求，自带两层 SSL 回退。
+        返回 (status, headers, body_bytes)，失败返回 (0, {}, None)。
+        在 session 内读完 body 再返回，避免连接关闭后无法读取。
+        """
+        # 第一层：certifi CA 证书
+        try:
+            ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+            connector = aiohttp.TCPConnector(ssl=ssl_ctx)
+            async with aiohttp.ClientSession(trust_env=True, connector=connector) as session:
+                async with session.request(method, url, **kwargs) as resp:
+                    body = await resp.read()
+                    return resp.status, dict(resp.headers), body
+        except (aiohttp.ClientConnectorSSLError,
+                aiohttp.ClientConnectorCertificateError):
+            pass
+        except Exception as e:
+            logger.error(f"[Picaes] 请求失败({url}): {e}")
+            return 0, {}, None
+
+        # 第二层：关闭证书验证
+        try:
+            logger.warning(f"[Picaes] SSL验证失败，回退: {url}")
+            ssl_ctx = ssl.create_default_context()
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = ssl.CERT_NONE
+            async with aiohttp.ClientSession() as session:
+                async with session.request(method, url, ssl=ssl_ctx, **kwargs) as resp:
+                    body = await resp.read()
+                    return resp.status, dict(resp.headers), body
+        except Exception as e:
+            logger.error(f"[Picaes] 回退请求也失败({url}): {e}")
+            return 0, {}, None
+
     async def _download_image_bytes(self, img_comp: Image) -> bytes | None:
-        """
-        直接下载图片原始字节，绕过 AstrBot 的 temp 文件机制。
-        用与 AstrBot 相同的 SSL 配置，保证网络兼容性。
-        """
+        """下载图片原始字节，绕过 AstrBot 的 temp 文件机制。"""
         url = img_comp.url or img_comp.file
         if not url:
             return None
 
-        # 对 base64 类型，直接解码（数据已经在本地，零损耗）
+        # base64 / 本地文件：直接读取
         if url.startswith("base64://"):
             import base64
             return base64.b64decode(url.removeprefix("base64://"))
 
-        # 对本地文件，直接读
         if url.startswith("file:///"):
             path = url[8:]
             if os.path.exists(path):
@@ -111,42 +142,18 @@ class PicaesPlugin(Star):
                     return f.read()
             return None
 
-        # HTTP/HTTPS 下载，使用 AstrBot 相同的 SSL 配置
-        try:
-            ssl_context = ssl.create_default_context(cafile=certifi.where())
-            connector = aiohttp.TCPConnector(ssl=ssl_context)
-            async with aiohttp.ClientSession(
-                trust_env=True, connector=connector
-            ) as session:
-                async with session.get(url) as resp:
-                    if resp.status == 200:
-                        return await resp.read()
-                    logger.error(f"[Picaes] 下载图片HTTP错误: {resp.status}")
-                    return None
-        except (aiohttp.ClientConnectorSSLError,
-                aiohttp.ClientConnectorCertificateError):
-            # SSL 证书验证失败时回退（与 AstrBot 行为一致）
-            logger.warning("[Picaes] SSL验证失败，回退到不验证模式")
-            ssl_context = ssl.create_default_context()
-            ssl_context.check_hostname = False
-            ssl_context.verify_mode = ssl.CERT_NONE
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, ssl=ssl_context) as resp:
-                    if resp.status == 200:
-                        return await resp.read()
-                    return None
-        except Exception as e:
-            logger.error(f"[Picaes] 下载图片异常: {e}")
-            return None
+        status, _, body = await self._request("get", url)
+        if status == 200 and body is not None:
+            return body
+        logger.error(f"[Picaes] 下载图片HTTP错误: {status}")
+        return None
 
     async def _call_api(
         self, image_bytes: bytes, level: int, key: str, mode: str
     ) -> tuple:
         """
         调用加解密API，发送原始字节。
-        返回 (result_bytes, error_msg)：
-          成功: (bytes, None)
-          失败: (None, "错误描述")
+        返回 (result_bytes, error_msg)：成功 (bytes, None)，失败 (None, "错误描述")
         """
         ext, mime = _detect_image_format(image_bytes)
         filename = f"image.{ext}"
@@ -163,41 +170,35 @@ class PicaesPlugin(Star):
             data.add_field("key", key)
             data.add_field("mode", mode)
 
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    self.api_url,
-                    data=data,
-                    timeout=aiohttp.ClientTimeout(total=self.timeout),
-                ) as resp:
-                    ct = resp.headers.get("Content-Type", "")
+            status, headers, body = await self._request(
+                "post", self.api_url,
+                data=data,
+                timeout=aiohttp.ClientTimeout(total=self.timeout),
+            )
 
-                    if resp.status == 200:
-                        # 成功：返回的是图片
-                        if "application/json" in ct:
-                            # 200 但返回 JSON，说明其实是错误
-                            body = await resp.text()
-                            logger.error(f"[Picaes] API返回JSON而非图片: {body}")
-                            try:
-                                err = json.loads(body)
-                                return None, err.get("error", body)
-                            except (json.JSONDecodeError, AttributeError):
-                                return None, body
+            if status == 0 or body is None:
+                return None, "无法连接API服务器"
 
-                        result = await resp.read()
-                        logger.info(
-                            f"[Picaes] ← API: {len(result)}字节, Content-Type={ct}"
-                        )
-                        return result, None
+            ct = headers.get("Content-Type", "")
 
-                    else:
-                        # 非 200：尝试解析 JSON 错误
-                        body = await resp.text()
-                        logger.error(f"[Picaes] API错误 {resp.status}: {body}")
-                        try:
-                            err = json.loads(body)
-                            return None, err.get("error", body)
-                        except (json.JSONDecodeError, AttributeError):
-                            return None, f"HTTP {resp.status}"
+            if status == 200:
+                if "application/json" in ct:
+                    logger.error(f"[Picaes] API返回JSON而非图片: {body[:200]}")
+                    try:
+                        err = json.loads(body)
+                        return None, err.get("error", body.decode("utf-8", errors="replace"))
+                    except (json.JSONDecodeError, AttributeError):
+                        return None, body.decode("utf-8", errors="replace")
+
+                logger.info(f"[Picaes] ← API: {len(body)}字节, Content-Type={ct}")
+                return body, None
+            else:
+                logger.error(f"[Picaes] API错误 {status}: {body[:200]}")
+                try:
+                    err = json.loads(body)
+                    return None, err.get("error", body.decode("utf-8", errors="replace"))
+                except (json.JSONDecodeError, AttributeError):
+                    return None, f"HTTP {status}"
 
         except Exception as e:
             logger.error(f"[Picaes] API请求异常: {e}")
