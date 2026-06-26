@@ -1,6 +1,6 @@
-name: 图片加解密
+name: astrbot_plugin_picaes
+display_name: 图片加密解密工具
 author: qiscard
-description: 对图片进行马赛克加密/解密，支持自定义加密等级和密钥
-version: 2.0.0
-repo: astrbot_plugin_picaes
-repo: https://github.com/Qiscard/astrbot_plugin_picaes 
+description: 图片马赛克加解密，支持图片/链接/PDF/ZIP多种发送方式，可选加密保护
+version: 3.0.0
+repo: https://github.com/Qiscard/astrbot_plugin_picaes

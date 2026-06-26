@@ -1,36 +1,62 @@
 {
+  "send_format": {
+    "type": "string",
+    "description": "结果发送方式",
+    "hint": "选择处理结果的发送形式",
+    "options": ["image", "link", "pdf", "zip"],
+    "labels": ["直接发送图片", "返回图床链接", "加密PDF文件", "加密ZIP文件"],
+    "default": "直接发送图片"
+  },
+  "enable_encryption": {
+    "type": "bool",
+    "description": "是否加密",
+    "hint": "开启后PDF/ZIP文件会设置密码保护，关闭则只打包不加密",
+    "default": true
+  },
+  "file_password": {
+    "type": "string",
+    "description": "文件加密密码",
+    "hint": "PDF/ZIP加密密码，仅在「是否加密」开启时生效",
+    "default": "123"
+  },
+  "send_password": {
+    "type": "bool",
+    "description": "是否发送密码",
+    "hint": "开启：发送密码消息；关闭：若已加密则提示「文件已加密」，若未加密则不发消息",
+    "default": true
+  },
   "process_mode": {
-    "type": "int",
-    "description": "处理方式（0=本地优先API回退，1=仅本地，2=仅API）",
-    "hint": "推荐服务器使用0或1，无需API也能正常工作",
-    "default": 0,
-    "minimum": 0,
-    "maximum": 2
+    "type": "string",
+    "description": "图片处理方式",
+    "hint": "本地模式需要服务器有足够算力，URL模式需配合API使用",
+    "options": ["0", "1", "2", "3"],
+    "labels": ["本地优先+API回退", "仅本地处理", "仅API上传处理", "API URL模式(推荐)"],
+    "default": "本地优先+API回退"
   },
   "api_url": {
     "type": "string",
     "description": "API接口地址",
-    "hint": "图片加解密API的完整地址，例如 https://picace.995456.xyz/api/proxy",
-    "default": "https://picace.995456.xyz/api/proxy"
+    "hint": "图片加解密API地址，仅API模式需要",
+    "default": "https://picace.995456.xyz/api/process"
   },
   "default_key": {
     "type": "string",
     "description": "默认密钥",
     "hint": "未指定密钥时使用的默认密钥",
-    "default": "tool.hadsky.com"
+    "default": "picaes"
   },
   "default_level": {
     "type": "int",
     "description": "默认加密等级(1-10)",
-    "hint": "未指定等级时使用的默认等级，1=10×10, 4=40×40, 10=100×100",
+    "hint": "1=10x10, 4=40x40, 10=100x100",
     "default": 4,
     "minimum": 1,
     "maximum": 10
   },
   "timeout": {
     "type": "int",
-    "description": "API请求超时时间(秒)",
-    "hint": "仅API模式生效，大图片处理时间较长",
+    "description": "API请求超时(秒)",
+    "hint": "仅API模式生效",
     "default": 120,
     "minimum": 10,
     "maximum": 300
