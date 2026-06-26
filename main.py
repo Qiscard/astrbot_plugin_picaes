@@ -12,10 +12,10 @@ from astrbot.api.message_components import *
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
-from astrbot.core.utils.io import get_astrbot_temp_path
+from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
 
-# ==================== 本地加解密算法（与 API 版本一致） ====================
+# ==================== 本地加解密算法 ====================
 
 _DEFAULT_KEY = "hadsky.com"
 
@@ -49,112 +49,52 @@ def _shuffle_decrypt(blocks: list, user_key: str):
 
 
 def process_image_local(image_bytes: bytes, level: int, key: str, mode: str) -> bytes:
-    """本地图片加解密，与 API 算法完全一致"""
+    """本地图片加解密，原样输出（不做格式转换）"""
     img = PILImage.open(io.BytesIO(image_bytes))
-    img = img.convert("RGBA")
-    img_w, img_h = img.size
-    pixels = img.load()
+    src_format = img.format or "PNG"
+
+    # 像素操作统一用 RGBA
+    img_rgba = img.convert("RGBA")
+    img_w, img_h = img_rgba.size
 
     n = level * 10
     block_w = img_w // n
     block_h = img_h // n
 
-    # 提取所有像素块
     blocks = []
     for row in range(n):
         for col in range(n):
             x0, y0 = col * block_w, row * block_h
-            block = img.crop((x0, y0, x0 + block_w, y0 + block_h))
+            block = img_rgba.crop((x0, y0, x0 + block_w, y0 + block_h))
             blocks.append(block)
 
-    # 混淆 / 解混淆
     if mode == "encrypt":
         _shuffle_encrypt(blocks, key)
     else:
         _shuffle_decrypt(blocks, key)
 
-    # 拼回图片
     result = PILImage.new("RGBA", (img_w, img_h))
     for i, block in enumerate(blocks):
         row, col = divmod(i, n)
         result.paste(block, (col * block_w, row * block_h))
 
+    # 保持原始格式输出
     buf = io.BytesIO()
-    result.save(buf, format="PNG")
+    if src_format == "JPEG":
+        result.convert("RGB").save(buf, format="JPEG", quality=95)
+    else:
+        result.save(buf, format="PNG")
     return buf.getvalue()
 
 
-# ==================== 工具函数 ====================
+# ==================== 保存路径 ====================
 
-_FORMAT_MAP = {
-    b"\x89PNG\r\n\x1a\n": ("png", "image/png"),
-    b"\xff\xd8\xff":       ("jpg", "image/jpeg"),
-    b"GIF87a":             ("gif", "image/gif"),
-    b"GIF89a":             ("gif", "image/gif"),
-    b"RIFF":               ("webp", "image/webp"),
-}
-
-
-def _detect_image_format(data: bytes) -> tuple:
-    for magic, fmt in _FORMAT_MAP.items():
-        if data[:len(magic)] == magic:
-            return fmt
-    return ("png", "image/png")
-
-
-_MAX_SEND_SIZE = 2 * 1024 * 1024  # 2MB，超过此大小主动压缩
-
-
-def _compress_for_send(data: bytes) -> tuple:
-    """
-    压缩图片到目标大小以下，返回 (bytes, ext)。
-    策略：先尝试 PNG optimize，仍超标则缩尺寸+转 JPEG。
-    """
-    if len(data) <= _MAX_SEND_SIZE:
-        return data, "png"
-
-    try:
-        img = PILImage.open(io.BytesIO(data))
-    except Exception:
-        return data, "png"
-
-    # 先试 PNG optimize
-    buf = io.BytesIO()
-    img.save(buf, format="PNG", optimize=True)
-    if buf.tell() <= _MAX_SEND_SIZE:
-        logger.info(f"[Picaes] PNG优化: {len(data)}→{buf.tell()}字节")
-        return buf.getvalue(), "png"
-
-    # 仍超标：缩尺寸到长边 2048 + 转 JPEG
-    w, h = img.size
-    max_side = 2048
-    if max(w, h) > max_side:
-        ratio = max_side / max(w, h)
-        img = img.resize((int(w * ratio), int(h * ratio)), PILImage.LANCZOS)
-
-    # 转 RGBA→RGB（JPEG 不支持透明通道）
-    if img.mode == "RGBA":
-        bg = PILImage.new("RGB", img.size, (255, 255, 255))
-        bg.paste(img, mask=img.split()[3])
-        img = bg
-    elif img.mode != "RGB":
-        img = img.convert("RGB")
-
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=85, optimize=True)
-    logger.info(f"[Picaes] 已压缩: {len(data)}→{buf.tell()}字节 (JPEG)")
-    return buf.getvalue(), "jpg"
-
-
-def _save_result_to_file(data: bytes, ext: str) -> str:
-    """把结果写入临时文件，自动压缩大图"""
-    data, final_ext = _compress_for_send(data)
-    if final_ext != ext:
-        ext = final_ext
-
-    temp_dir = get_astrbot_temp_path()
-    filename = f"picaes_{int(time.time())}_{uuid.uuid4().hex[:6]}.{ext}"
-    path = os.path.join(temp_dir, filename)
+def _save_result(data: bytes) -> str:
+    """保存到 plugin_data/astrbot_plugin_picaes/，原样写入"""
+    save_dir = os.path.join(get_astrbot_plugin_data_path(), "astrbot_plugin_picaes")
+    os.makedirs(save_dir, exist_ok=True)
+    filename = f"picaes_{int(time.time())}_{uuid.uuid4().hex[:6]}.png"
+    path = os.path.join(save_dir, filename)
     with open(path, "wb") as f:
         f.write(data)
     return path
@@ -166,7 +106,7 @@ def _save_result_to_file(data: bytes, ext: str) -> str:
     "astrbot_plugin_picaes",
     "AstrBotUser",
     "通过API对图片进行马赛克加密/解密，支持自定义加密等级和密钥",
-    "2.0.0",
+    "2.1.0",
     "astrbot_plugin_picaes",
 )
 class PicaesPlugin(Star):
@@ -177,7 +117,6 @@ class PicaesPlugin(Star):
         self.default_key = config.get("default_key", "tool.hadsky.com")
         self.default_level = config.get("default_level", 4)
         self.timeout = config.get("timeout", 120)
-        # 0=本地优先(API回退), 1=仅本地, 2=仅API
         self.process_mode = config.get("process_mode", 0)
 
     def _find_image_component(self, chain) -> Image | None:
@@ -202,7 +141,7 @@ class PicaesPlugin(Star):
                     key = parts[0]
         return level, key
 
-    # ---------- 网络请求（两层 SSL 回退） ----------
+    # ---------- 网络请求 ----------
 
     async def _request(self, method: str, url: str, **kwargs) -> tuple:
         try:
@@ -216,7 +155,6 @@ class PicaesPlugin(Star):
         except Exception as e:
             logger.error(f"[Picaes] 请求失败({url}): {e}")
             return 0, {}, None
-
         try:
             ssl_ctx = ssl.create_default_context()
             ssl_ctx.check_hostname = False
@@ -248,7 +186,6 @@ class PicaesPlugin(Star):
                 with open(url, "rb") as f:
                     return f.read()
             return None
-
         status, _, body = await self._request("get", url)
         if status == 200 and body is not None:
             return body
@@ -258,30 +195,35 @@ class PicaesPlugin(Star):
     # ---------- API 调用 ----------
 
     async def _call_api(self, image_bytes: bytes, level: int, key: str, mode: str) -> tuple:
-        ext, mime = _detect_image_format(image_bytes)
-        logger.info(f"[Picaes] → API: {len(image_bytes)}字节, 格式={ext}, 等级={level}, 模式={mode}")
+        # 检测格式
+        if image_bytes[:8] == b"\x89PNG\r\n\x1a\n":
+            ext, mime = "png", "image/png"
+        elif image_bytes[:3] == b"\xff\xd8\xff":
+            ext, mime = "jpg", "image/jpeg"
+        else:
+            ext, mime = "png", "image/png"
+
+        logger.info(f"[Picaes] → API: {len(image_bytes)}字节, 格式={ext}")
         try:
             data = aiohttp.FormData()
             data.add_field("image", image_bytes, filename=f"image.{ext}", content_type=mime)
             data.add_field("level", str(level))
             data.add_field("key", key)
             data.add_field("mode", mode)
-
             status, headers, body = await self._request(
                 "post", self.api_url, data=data,
                 timeout=aiohttp.ClientTimeout(total=self.timeout),
             )
             if status == 0 or body is None:
                 return None, "无法连接API服务器"
-            ct = headers.get("Content-Type", "")
             if status == 200:
+                ct = headers.get("Content-Type", "")
                 if "application/json" in ct:
                     try:
                         err = json.loads(body)
                         return None, err.get("error", body.decode())
                     except Exception:
                         return None, body.decode()
-                logger.info(f"[Picaes] ← API: {len(body)}字节")
                 return body, None
             else:
                 try:
@@ -310,7 +252,6 @@ class PicaesPlugin(Star):
                     img_comp = self._find_image_component(seg.chain)
                     if img_comp:
                         break
-
         if not img_comp:
             yield event.plain_result(
                 f"请发送图片！用法：\n"
@@ -329,34 +270,31 @@ class PicaesPlugin(Star):
             yield event.plain_result("下载图片失败，请重新发送图片试试。")
             return
         t1 = time.monotonic()
-        logger.info(f"[Picaes] ① 下载图片: {t1 - t0:.1f}s, {len(image_bytes)}字节")
+        logger.info(f"[Picaes] ① 下载: {t1 - t0:.1f}s, {len(image_bytes)}字节")
 
-        # ② 加解密处理
+        # ② 加解密
         result_bytes = None
         used = ""
 
         if self.process_mode == 2:
-            # 仅 API
             result_bytes, error = await self._call_api(image_bytes, level, key, mode)
             used = "API"
             if result_bytes is None:
                 yield event.plain_result(f"API{mode_name}失败：{error}")
                 return
         elif self.process_mode == 1:
-            # 仅本地
             result_bytes = await asyncio.to_thread(
                 process_image_local, image_bytes, level, key, mode
             )
             used = "本地"
         else:
-            # 本地优先，失败回退 API
             try:
                 result_bytes = await asyncio.to_thread(
                     process_image_local, image_bytes, level, key, mode
                 )
                 used = "本地"
             except Exception as e:
-                logger.warning(f"[Picaes] 本地处理失败，尝试API: {e}")
+                logger.warning(f"[Picaes] 本地失败，回退API: {e}")
                 result_bytes, error = await self._call_api(image_bytes, level, key, mode)
                 used = "API"
                 if result_bytes is None:
@@ -364,26 +302,24 @@ class PicaesPlugin(Star):
                     return
 
         t2 = time.monotonic()
-        logger.info(f"[Picaes] ② {used}处理: {t2 - t1:.1f}s, 返回{len(result_bytes)}字节")
+        logger.info(f"[Picaes] ② 处理: {t2 - t1:.1f}s, {len(result_bytes)}字节 [{used}]")
 
-        # ③ 保存结果
-        ext, _ = _detect_image_format(result_bytes)
-        result_path = _save_result_to_file(result_bytes, ext)
+        # ③ 保存到 plugin_data，原样写入
+        result_path = _save_result(result_bytes)
         t3 = time.monotonic()
-        logger.info(f"[Picaes] ③ 保存文件: {t3 - t2:.1f}s")
+        logger.info(f"[Picaes] ③ 保存: {t3 - t2:.1f}s → {result_path}")
 
+        # ④ 发送
         yield event.chain_result([Image.fromFileSystem(result_path)])
         t4 = time.monotonic()
-        logger.info(f"[Picaes] ④ 发送完成: {t4 - t3:.1f}s, 总耗时: {t4 - t0:.1f}s [{used}]")
+        logger.info(f"[Picaes] ④ 发送: {t4 - t3:.1f}s, 总耗时: {t4 - t0:.1f}s")
 
     @filter.command("加密")
     async def encrypt(self, event: AstrMessageEvent):
-        """加密图片命令：加密 [等级] [密钥]"""
         async for result in self._process(event, "encrypt"):
             yield result
 
     @filter.command("解密")
     async def decrypt(self, event: AstrMessageEvent):
-        """解密图片命令：解密 [等级] [密钥]"""
         async for result in self._process(event, "decrypt"):
             yield result
