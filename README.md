@@ -1,6 +1,10 @@
-# 图片加解密插件 v3.0
+# 图片加解密插件 v3.0.1
+两种图片马赛克加密/解密，支持图片/PDF/ZIP 多种发送方式，可选密码保护。
 
-图片马赛克加密/解密，支持图片/PDF/ZIP 多种发送方式，可选密码保护。
+算法1[HS工具箱](https://tool.hadsky.com/enimg)
+
+算法2[小番茄图片混淆](https://singularpoint.cn/hideImg1.html)
+
 
 ## 功能特性
 
