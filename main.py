@@ -64,6 +64,96 @@ def _detect_format(data: bytes) -> str:
     return "PNG"
 
 
+# ==================== Gilbert 曲线算法（singularpoint.cn） ====================
+
+def _gilbert2d(width: int, height: int) -> list:
+    """广义希尔伯特（Gilbert）空间填充曲线，返回 (x,y) 坐标序列"""
+    coords = []
+    if width >= height:
+        _gilbert_gen(0, 0, width, 0, 0, height, coords)
+    else:
+        _gilbert_gen(0, 0, 0, height, width, 0, coords)
+    return coords
+
+
+def _gilbert_gen(x, y, ax, ay, bx, by, coords):
+    w = abs(ax + ay)
+    h = abs(bx + by)
+    dax = (1 if ax > 0 else -1) if ax != 0 else 0
+    day = (1 if ay > 0 else -1) if ay != 0 else 0
+    dbx = (1 if bx > 0 else -1) if bx != 0 else 0
+    dby = (1 if by > 0 else -1) if by != 0 else 0
+
+    if h == 1:
+        for _ in range(w):
+            coords.append((x, y))
+            x += dax; y += day
+        return
+    if w == 1:
+        for _ in range(h):
+            coords.append((x, y))
+            x += dbx; y += dby
+        return
+
+    ax2, ay2 = ax // 2, ay // 2
+    bx2, by2 = bx // 2, by // 2
+    w2 = abs(ax2 + ay2)
+    h2 = abs(bx2 + by2)
+
+    if 2 * w > 3 * h:
+        if w2 % 2 and w > 2:
+            ax2 += dax; ay2 += day
+        _gilbert_gen(x, y, ax2, ay2, bx, by, coords)
+        _gilbert_gen(x + ax2, y + ay2, ax - ax2, ay - ay2, bx, by, coords)
+    else:
+        if h2 % 2 and h > 2:
+            bx2 += dbx; by2 += dby
+        _gilbert_gen(x, y, bx2, by2, ax2, ay2, coords)
+        _gilbert_gen(x + bx2, y + by2, ax, ay, bx - bx2, by - by2, coords)
+        _gilbert_gen(x + (ax - dax) + (bx2 - dbx), y + (ay - day) + (by2 - dby),
+                     -bx2, -by2, -(ax - ax2), -(ay - ay2), coords)
+
+
+def process_image_curve(image_bytes: bytes, mode: str) -> bytes:
+    """
+    Gilbert 曲线加密/解密（与 singularpoint.cn 算法一致）。
+    沿空间填充曲线遍历像素，用黄金比例偏移重排。
+    压缩抗性强，JPEG 压缩后仍可还原。
+    """
+    import numpy as np
+
+    img = PILImage.open(io.BytesIO(image_bytes)).convert("RGBA")
+    w, h = img.size
+    pixels = np.array(img)  # (h, w, 4)
+
+    curve = _gilbert2d(w, h)
+    total = w * h
+    offset = round(((5 ** 0.5) - 1) / 2 * total)  # 黄金比例偏移
+
+    result = np.zeros_like(pixels)
+
+    if mode == "encrypt":
+        for i in range(total):
+            ox, oy = curve[i]
+            nx, ny = curve[(i + offset) % total]
+            result[ny, nx] = pixels[oy, ox]
+    else:
+        for i in range(total):
+            ox, oy = curve[i]
+            nx, ny = curve[(i + offset) % total]
+            result[oy, ox] = pixels[ny, nx]
+
+    out = PILImage.fromarray(result, "RGBA")
+    buf = io.BytesIO()
+    if mode == "encrypt":
+        # 加密：JPEG quality 1（极小体积，抗压缩）
+        out.convert("RGB").save(buf, format="JPEG", quality=1)
+    else:
+        # 解密：PNG 无损输出（保留完整画质）
+        out.save(buf, format="PNG")
+    return buf.getvalue()
+
+
 def process_image_local(image_bytes: bytes, level: int, key: str, mode: str) -> bytes:
     """本地图片加解密，输出 JPEG"""
     img = PILImage.open(io.BytesIO(image_bytes))
@@ -192,7 +282,7 @@ def _make_pdf(image_bytes: bytes, password: str) -> bytes:
     "astrbot_plugin_picaes",
     "qiscard",
     "图片马赛克加解密，支持自定义等级/密钥，支持图片/链接/PDF/ZIP多种发送方式",
-    "3.0.0",
+    "3.1.0",
     "astrbot_plugin_picaes",
 )
 class PicaesPlugin(Star):
@@ -520,22 +610,22 @@ class PicaesPlugin(Star):
 
     # ---------- 指令注册 ----------
 
-    @filter.command("加密")
+    @filter.command("加密1")
     async def encrypt(self, event: AstrMessageEvent):
         async for r in self._process(event, "encrypt"):
             yield r
 
-    @filter.command("解密")
+    @filter.command("解密1")
     async def decrypt(self, event: AstrMessageEvent):
         async for r in self._process(event, "decrypt"):
             yield r
 
-    @filter.command("解密pdf")
+    @filter.command("解密1pdf")
     async def decrypt_pdf(self, event: AstrMessageEvent):
         async for r in self._process(event, "decrypt", force_format="pdf"):
             yield r
 
-    @filter.command("解密zip")
+    @filter.command("解密1zip")
     async def decrypt_zip(self, event: AstrMessageEvent):
         async for r in self._process(event, "decrypt", force_format="zip"):
             yield r
@@ -543,16 +633,77 @@ class PicaesPlugin(Star):
     @filter.command("图解帮助")
     async def help_cmd(self, event: AstrMessageEvent):
         yield event.plain_result(
-            "📖 图片加解密工具 v3.0 帮助\n"
+            "📖 图片加解密工具 v3.1 帮助\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
-            "🔒 加密：\n"
-            "  加密 [等级] [密钥] — 加密图片\n\n"
-            "🔓 解密：\n"
-            "  解密 [等级] [密钥] — 解密（按配置发送）\n"
-            "  解密pdf [等级] [密钥] — 解密后转PDF\n"
-            "  解密zip [等级] [密钥] — 解密后转ZIP\n\n"
+            "🔒 算法1（像素块打乱）：\n"
+            "  加密1 [等级] [密钥] — 加密图片\n"
+            "  解密1 [等级] [密钥] — 解密图片\n"
+            "  解密1pdf / 解密1zip — 解密后转格式\n\n"
+            "🌀 算法2（Gilbert曲线，抗压缩）：\n"
+            "  加密2 — 曲线混淆，输出极小JPEG\n"
+            "  解密2 — 曲线还原，输出PNG无损\n"
+            "  解密2pdf / 解密2zip — 解密后转格式\n\n"
             "⚙️ 参数：\n"
             f"  等级：1-10（默认{self.default_level}）\n"
             f"  密钥：自定义（默认 {self.default_key}）\n\n"
             "💡 发送指令附带图片，或回复图片后发送指令"
         )
+
+    # ---------- 算法2：Gilbert 曲线命令 ----------
+
+    async def _process_curve(self, event: AstrMessageEvent, mode: str, force_format: str | None = None):
+        """Gilbert 曲线加密/解密，复用算法1的发送逻辑"""
+        mode_name = "加密2" if mode == "encrypt" else "解密2"
+        is_encrypt = (mode == "encrypt")
+        send_fmt = force_format if force_format else ("image" if is_encrypt else (self.send_format or "image"))
+        fmt_label = {"image": "图片", "pdf": "PDF", "zip": "ZIP"}.get(send_fmt, send_fmt)
+
+        img_comp = self._find_image_component(event.message_obj.message)
+        if not img_comp:
+            for seg in event.message_obj.message:
+                if isinstance(seg, Reply):
+                    img_comp = self._find_image_component(seg.chain)
+                    if img_comp:
+                        break
+        if not img_comp:
+            yield event.plain_result(f"请发送图片！用法：回复图片或附带图片发送「{mode_name}」")
+            return
+
+        yield event.plain_result(f"正在{mode_name}（{fmt_label}），请稍候...")
+        t0 = time.monotonic()
+
+        image_bytes = await self._download_image_bytes(img_comp)
+        if not image_bytes:
+            yield event.plain_result("下载图片失败，请重试。")
+            return
+        logger.info(f"[Picaes] {mode_name} 下载: {time.monotonic() - t0:.1f}s, {len(image_bytes)}字节")
+
+        t1 = time.monotonic()
+        result_bytes = await asyncio.to_thread(process_image_curve, image_bytes, mode)
+        logger.info(f"[Picaes] {mode_name} 处理: {time.monotonic() - t1:.1f}s, {len(result_bytes)}字节")
+
+        # 复用算法1的发送逻辑（图片/PDF/ZIP）
+        async for r in self._deliver_result(event, result_bytes, mode_name, send_fmt, is_encrypt=is_encrypt):
+            yield r
+
+        logger.info(f"[Picaes] {mode_name} 完成: {time.monotonic() - t0:.1f}s")
+
+    @filter.command("加密2")
+    async def obfuscate(self, event: AstrMessageEvent):
+        async for r in self._process_curve(event, "encrypt"):
+            yield r
+
+    @filter.command("解密2")
+    async def restore(self, event: AstrMessageEvent):
+        async for r in self._process_curve(event, "decrypt"):
+            yield r
+
+    @filter.command("解密2pdf")
+    async def restore_pdf(self, event: AstrMessageEvent):
+        async for r in self._process_curve(event, "decrypt", force_format="pdf"):
+            yield r
+
+    @filter.command("解密2zip")
+    async def restore_zip(self, event: AstrMessageEvent):
+        async for r in self._process_curve(event, "decrypt", force_format="zip"):
+            yield r
